@@ -15,57 +15,74 @@ torch.manual_seed(1337)
 import matplotlib.pyplot as plt
 # %matplotlib inline
 
-data = open('input.txt', 'r').read()
-print(data[:1000])
+# hyperparameters
+batch_size = 32 # how many independent sequences will we process in parallel?
+block_size = 8 # what is the maximum context length for predictions?
+max_iters = 3000
+eval_interval = 300
+learning_rate = 1e-3
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f'using device: {device}')
+eval_iters = 200
+n_embd = 32
+
+data = open('input.txt', 'r', encoding='utf-8').read()
 
 chars = sorted(list(set(data)))
 vocab_size = len(chars)
-print(''.join(chars))
-print(vocab_size)
 
 # mapping between char and integer for each unique character
 stoi = { ch:i for i,ch in enumerate(chars) }
 itos = { i:ch for i,ch in enumerate(chars) }
 encode = lambda s: [stoi[c] for c in s] # output list of all integers
 decode = lambda a: ''.join([itos[i] for i in a]) # output string
-print(encode("hii there!"))
-print(decode(encode("hii there!")))
 
 n = int(0.9*len(data))
-train_data = encode(data[:n])
-val_data = encode(data[n:])
+train_data = torch.tensor(encode(data[:n]), dtype=torch.long)
+val_data = torch.tensor(encode(data[n:]), dtype=torch.long)
 
 torch.manual_seed(1337)
 batch_size = 4 # how many independent sequences will we process in parallel?
 block_size = 8 # what is the maximum context length for predictions?
 
+# data loading
 def get_batch(split):
   data = train_data if split == 'train' else val_data
-  data = torch.tensor(data, dtype=torch.long) # Convert data to a torch.LongTensor here
   ix = torch.randint(len(data) - block_size, (batch_size,))
   x = torch.stack([data[i:i+block_size] for i in ix])
   y = torch.stack([data[i+1:i+block_size+1] for i in ix])
-  return x, y
+  return x.to(device), y.to(device)
 
-xb, yb = get_batch('train')
-print('inputs:')
-print(xb.shape)
-print(xb)
-print('targets:')
-print(yb.shape)
-print(yb)
-
-print('----')
+@torch.no_grad()
+def estimate_loss():
+  out = {}
+  model.eval()
+  for split in ['train', 'val']:
+    losses = torch.zeros(eval_iters)
+    for k in range(eval_iters):
+      X, Y = get_batch(split)
+      logits, loss = model(X, Y)
+      losses[k] = loss.item()
+    out[split] = losses.mean()
+  model.train()
+  return out
 
 
 class BigramLanguageModel(nn.Module):
-  def __init__(self, vocab_size):
+  def __init__(self):
     super().__init__()
-    self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
-
+    self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+    self.position_embedding_table = nn.Embedding(block_size, n_embd)
+    self.lm_head = nn.Linear(n_embd, vocab_size)
+    
   def forward(self, idx, targets=None):
-    logits = self.token_embedding_table(idx) # (B,T,C)
-
+    tok_emb = self.token_embedding_table(idx) # (B,T,C)
+    pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T,C)
+    
+    x = tok_emb + pos_emb # (B,T,C)
+    
+    logits = self.lm_head(x) # (B,T,vocab_size)
+    
     if targets is None:
       loss = None
     else:
@@ -87,18 +104,17 @@ class BigramLanguageModel(nn.Module):
       idx = torch.cat((idx, idx_next), dim=1)
     return idx
 
-m = BigramLanguageModel(vocab_size)
-out, loss = m(xb, yb)
-print(out.shape)
-print(loss)
+model = BigramLanguageModel()
+m = model.to(device)
 
-idx = torch.zeros((1,1), dtype=torch.long)
-print(decode(m.genereate(idx, max_new_tokens=100)[0].tolist()))
+optimizer = torch.optim.AdamW(m.parameters(), lr=learning_rate)
 
-optimizer = torch.optim.AdamW(m.parameters(), lr=1e-3)
-
-batch_size = 32
-for steps in range(20000):
+for steps in range(max_iters):
+  
+  if steps % eval_interval == 0:
+    losses = estimate_loss()
+    print(f"step {steps}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+    
   # get sample batch from training set
   xb, yb = get_batch('train')
 
@@ -108,7 +124,6 @@ for steps in range(20000):
   loss.backward()
   optimizer.step()
 
-  if steps % 1000 == 0:
-    print(loss.item())
 
+idx = torch.zeros((1, 1), dtype=torch.long, device=device)
 print(decode(m.genereate(idx, max_new_tokens=500)[0].tolist()))
