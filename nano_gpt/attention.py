@@ -26,7 +26,7 @@ print(f'using device: {device}')
 eval_iters = 200
 n_head = 6
 n_layer = 6
-n_embd = 384
+n_embd = 384 
 dropout = 0.2
 
 text = open('input.txt', 'r', encoding='utf-8').read()
@@ -71,37 +71,33 @@ def estimate_loss():
   model.train()
   return out
 
-class Head(nn.Module):
-  def __init__(self, head_size):
-    super().__init__()
-    self.key = nn.Linear(n_embd, head_size, bias=False)
-    self.query = nn.Linear(n_embd, head_size, bias=False)
-    self.value = nn.Linear(n_embd, head_size, bias=False)
-    self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-    self.dropout = nn.Dropout(dropout)
-    
-  def forward(self, x):
-    B, T, C = x.shape
-    k = self.key(x)
-    q = self.query(x)
-    wei = q @ k.transpose(-2, -1) * C**-0.5
-    wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
-    wei = F.softmax(wei, dim=-1)
-    wei = self.dropout(wei)
-    v = self.value(x)
-    return wei @ v
-
 class MultiHeadAttention(nn.Module):
-  def __init__(self, num_heads, head_size):
+  def __init__(self):
     super().__init__()
-    self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+    self.key = nn.Linear(n_embd, n_embd, bias=False)
+    self.query = nn.Linear(n_embd, n_embd, bias=False)
+    self.value = nn.Linear(n_embd, n_embd, bias=False)
     self.proj = nn.Linear(n_embd, n_embd)
+    self.register_buffer('bias', torch.tril(torch.ones(block_size, block_size)).view(1, 1, block_size, block_size))
     self.dropout = nn.Dropout(dropout)
   
   def forward(self, x):
-    out = torch.cat([head(x) for head in self.heads], dim=-1)
-    out = self.dropout(self.proj(out))
-    return out
+    B, T, C = x.size()
+
+    # calculate key, query, value by splitting the embedding into heads 
+    k = self.key(x).view(B, T, n_head, C // n_head).transpose(1, 2)  # (B, n_head, T, head_size)
+    q = self.query(x).view(B, T, n_head, C // n_head).transpose(1, 2) # (B, n_head, T, head_size)
+    v = self.value(x).view(B, T, n_head, C // n_head).transpose(1, 2) # (B, n_head, T, head_size)
+    
+    wei = q @ k.transpose(-2, -1) * C**-0.5
+    wei = wei.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+    wei = F.softmax(wei, dim=-1)
+    wei = self.dropout(wei)
+    out = wei @ v
+
+    # rearrange the output back to the original shape
+    out = out.transpose(1, 2).contiguous().view(B, T, C)
+    return self.proj(out)
 
 class FeedForward(nn.Module):
   def __init__(self, n_embd):
@@ -120,7 +116,7 @@ class Block(nn.Module):
   def __init__(self, n_embd, n_head):
     super().__init__()
     head_size = n_embd // n_head
-    self.sa = MultiHeadAttention(num_heads=4, head_size=n_embd // 4)
+    self.sa = MultiHeadAttention()
     self.ff = FeedForward(n_embd)
     self.ln1 = nn.LayerNorm(n_embd)
     self.ln2 = nn.LayerNorm(n_embd)
