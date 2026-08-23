@@ -23,7 +23,7 @@ torch.manual_seed(1337)
 
 text = open('input.txt', 'r', encoding='utf-8').read()
 
-chars = sorted(list(set(text)))
+chars = sorted(list(set[str](text)))
 vocab_size = len(chars)
 
 # mapping between char and integer for each unique character
@@ -66,9 +66,13 @@ class MultiHeadAttention(nn.Module):
     self.query = nn.Linear(n_embd, n_embd, bias=False)
     self.value = nn.Linear(n_embd, n_embd, bias=False)
     self.proj = nn.Linear(n_embd, n_embd)
-    self.register_buffer('bias', torch.tril(torch.ones(block_size, block_size)).view(1, 1, block_size, block_size))
     self.dropout = nn.Dropout(dropout)
-  
+    
+    self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+    if not self.flash:
+      print("Using custom attention")
+      self.register_buffer('bias', torch.tril(torch.ones(block_size, block_size)).view(1, 1, block_size, block_size))
+
   def forward(self, x):
     B, T, C = x.size()
 
@@ -77,22 +81,26 @@ class MultiHeadAttention(nn.Module):
     q = self.query(x).view(B, T, n_head, C // n_head).transpose(1, 2) # (B, n_head, T, head_size)
     v = self.value(x).view(B, T, n_head, C // n_head).transpose(1, 2) # (B, n_head, T, head_size)
     
-    wei = q @ k.transpose(-2, -1) * C**-0.5
-    wei = wei.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-    wei = F.softmax(wei, dim=-1)
-    wei = self.dropout(wei)
-    out = wei @ v
+    if self.flash:
+      out = F.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=0.2 if self.training else 0, is_causal=True)
+    else:
+      wei = q @ k.transpose(-2, -1) * C**-0.5
+      wei = wei.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+      wei = F.softmax(wei, dim=-1)
+      wei = self.dropout(wei)
+      out = wei @ v
 
-    # rearrange the output back to the original shape
+      # rearrange the output back to the original shape
     out = out.transpose(1, 2).contiguous().view(B, T, C)
-    return self.proj(out)
+    
+    return self.dropout(self.proj(out))
 
 class FeedForward(nn.Module):
   def __init__(self, n_embd):
     super().__init__()
     self.net = nn.Sequential(
       nn.Linear(n_embd, 4 * n_embd),
-      nn.ReLU(),
+      nn.GELU(),
       nn.Linear(4 * n_embd, n_embd),
       nn.Dropout(dropout),
     )
@@ -142,6 +150,7 @@ class BigramLanguageModel(nn.Module):
 
     return logits, loss
 
+
   def genereate(self, idx, max_new_tokens):
 
     for _ in range(max_new_tokens):
@@ -179,7 +188,6 @@ for steps in range(max_iters):
   optimizer.zero_grad(set_to_none=True)
   loss.backward()
   optimizer.step()
-
 
 idx = torch.zeros((1, 1), dtype=torch.long, device=device)
 print(decode(m.genereate(idx, max_new_tokens=500)[0].tolist()))
