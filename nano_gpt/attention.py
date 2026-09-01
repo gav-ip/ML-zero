@@ -76,7 +76,7 @@ class MultiHeadAttention(nn.Module):
   def forward(self, x):
     B, T, C = x.size()
 
-    # calculate key, query, value by splitting the embedding into heads 
+    # calculate key, query, value by splitting the embedding into separateheads 
     k = self.key(x).view(B, T, n_head, C // n_head).transpose(1, 2)  # (B, n_head, T, head_size)
     q = self.query(x).view(B, T, n_head, C // n_head).transpose(1, 2) # (B, n_head, T, head_size)
     v = self.value(x).view(B, T, n_head, C // n_head).transpose(1, 2) # (B, n_head, T, head_size)
